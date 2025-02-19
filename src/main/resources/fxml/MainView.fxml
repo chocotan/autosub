@@ -1,0 +1,84 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<?import javafx.scene.layout.*?>
+<?import javafx.scene.control.*?>
+<?import javafx.scene.media.MediaView?>
+<?import javafx.geometry.Insets?>
+<?import javafx.scene.image.ImageView?>
+
+<VBox xmlns="http://javafx.com/javafx"
+      xmlns:fx="http://javafx.com/fxml"
+      fx:controller="com.subtitler.MainViewController"
+      spacing="10">
+    <padding>
+        <Insets top="10" right="10" bottom="10" left="10"/>
+    </padding>
+    
+    <MenuBar>
+        <Menu text="文件">
+            <MenuItem text="打开视频" onAction="#openVideo"/>
+            <MenuItem text="导出字幕" onAction="#exportSubtitles"/>
+            <SeparatorMenuItem />
+            <MenuItem text="视频编码" onAction="#encodeVideo"/>
+        </Menu>
+        <Menu text="字幕">
+            <MenuItem text="导入SRT字幕" onAction="#importSrtSubtitles"/>
+            <MenuItem text="导入TXT文本" onAction="#importTxtSubtitles"/>
+        </Menu>
+        <Menu text="帮助">
+            <MenuItem text="关于" onAction="#showAbout"/>
+        </Menu>
+    </MenuBar>
+
+    <ImageView fx:id="mediaView" 
+               fitWidth="800" 
+               fitHeight="450" 
+               preserveRatio="true"
+               smooth="true"
+               style="-fx-background-color: black;"/>
+    
+    <VBox spacing="5">
+        <HBox spacing="10" alignment="CENTER_LEFT">
+            <Button text="后退1秒" onAction="#seekBackward1s"/>
+            <Button text="后退0.5秒" onAction="#seekBackward05s"/>
+            <Button text="播放/暂停" onAction="#togglePlay"/>
+            <Button text="前进0.5秒" onAction="#seekForward05s"/>
+            <Button text="前进1秒" onAction="#seekForward1s"/>
+            <Label fx:id="timeLabel" text="00:00:00"/>
+            <ProgressBar fx:id="progressBar" visible="false" prefWidth="200"/>
+        </HBox>
+        
+        <Slider fx:id="timeSlider" VBox.vgrow="NEVER">
+            <VBox.margin>
+                <Insets left="5" right="5"/>
+            </VBox.margin>
+        </Slider>
+    </VBox>
+    
+    <SplitPane VBox.vgrow="ALWAYS" orientation="HORIZONTAL">
+        <TextArea fx:id="subtitleInput" promptText="在此粘贴字幕文本，每行一个字幕" 
+                  wrapText="true" onKeyReleased="#updateSubtitles"/>
+        
+        <TableView fx:id="subtitleTable">
+            <columns>
+                <TableColumn fx:id="startTimeColumn" text="开始时间" prefWidth="100"/>
+                <TableColumn fx:id="endTimeColumn" text="结束时间" prefWidth="100"/>
+                <TableColumn fx:id="contentColumn" text="字幕内容" prefWidth="400"/>
+            </columns>
+            <contextMenu>
+                <ContextMenu>
+                    <items>
+                        <MenuItem text="设置开始时间" onAction="#setStartTime"/>
+                        <MenuItem text="设置结束时间" onAction="#setEndTime"/>
+                        <SeparatorMenuItem />
+                        <MenuItem text="在上方插入行" onAction="#insertRowAbove"/>
+                        <MenuItem text="在下方插入行" onAction="#insertRowBelow"/>
+                        <SeparatorMenuItem />
+                        <MenuItem text="删除当前行" onAction="#deleteCurrentRow"/>
+                        <MenuItem text="删除下方所有行" onAction="#deleteRowsBelow"/>
+                    </items>
+                </ContextMenu>
+            </contextMenu>
+        </TableView>
+    </SplitPane>
+</VBox> 
