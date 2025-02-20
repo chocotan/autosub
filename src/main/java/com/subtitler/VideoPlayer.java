@@ -1,32 +1,71 @@
 package com.subtitler;
 
-import org.bytedeco.javacv.*;
-import org.bytedeco.ffmpeg.global.avcodec;
+import uk.co.caprica.vlcj.player.embedded.EmbeddedMediaPlayer;
+import uk.co.caprica.vlcj.factory.MediaPlayerFactory;
 import javafx.scene.image.ImageView;
-import javafx.scene.image.WritableImage;
-import javafx.scene.image.PixelWriter;
+import javafx.scene.layout.Pane;
 import javafx.application.Platform;
-import java.awt.image.BufferedImage;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
+import uk.co.caprica.vlcj.javafx.videosurface.ImageViewVideoSurface;
 
 public class VideoPlayer {
-    private FFmpegFrameGrabber grabber;
     private final ImageView imageView;
     private final AtomicBoolean isPlaying = new AtomicBoolean(false);
     private double currentTimeSeconds = 0;
     private double durationSeconds = 0;
-    private ScheduledExecutorService playbackThread;
     private VideoPlayerCallback callback;
     private volatile boolean isUpdatingSlider = false;
-    private double lastTimeSeconds = 0;
-    private ScheduledExecutorService seekDelayExecutor;
-    private static final long SEEK_DELAY_MS = 200; // 200毫秒的延迟
+    private MediaPlayerFactory mediaPlayerFactory;
+    private EmbeddedMediaPlayer mediaPlayer;
+    private Pane videoPane;
 
     public VideoPlayer(ImageView imageView) {
         this.imageView = imageView;
+        initializePlayer();
+    }
+
+    private void initializePlayer() {
+        // 创建 VLC 媒体播放器工厂和播放器，禁用字幕自动检测
+        String[] args = {"--no-sub-autodetect-file", "--no-video-title-show"};
+        mediaPlayerFactory = new MediaPlayerFactory(args);
+        mediaPlayer = mediaPlayerFactory.mediaPlayers().newEmbeddedMediaPlayer();
+        
+        // 创建 JavaFX 视频表面并设置给播放器
+        ImageViewVideoSurface videoSurface = new ImageViewVideoSurface(imageView);
+        mediaPlayer.videoSurface().set(videoSurface);
+        
+        // 设置时间变化监听器
+        mediaPlayer.events().addMediaPlayerEventListener(new uk.co.caprica.vlcj.player.base.MediaPlayerEventAdapter() {
+            @Override
+            public void timeChanged(uk.co.caprica.vlcj.player.base.MediaPlayer mediaPlayer, long newTime) {
+                currentTimeSeconds = newTime / 1000.0;
+                if (callback != null && !isUpdatingSlider) {
+                    Platform.runLater(() -> {
+                        callback.onTimeChanged(currentTimeSeconds);
+                    });
+                }
+            }
+
+            @Override
+            public void lengthChanged(uk.co.caprica.vlcj.player.base.MediaPlayer mediaPlayer, long newLength) {
+                durationSeconds = newLength / 1000.0;
+                if (callback != null) {
+                    Platform.runLater(() -> {
+                        callback.onDurationChanged(durationSeconds);
+                    });
+                }
+            }
+
+            @Override
+            public void finished(uk.co.caprica.vlcj.player.base.MediaPlayer mediaPlayer) {
+                isPlaying.set(false);
+            }
+
+            @Override
+            public void error(uk.co.caprica.vlcj.player.base.MediaPlayer mediaPlayer) {
+                isPlaying.set(false);
+            }
+        });
     }
 
     public void setCallback(VideoPlayerCallback callback) {
@@ -34,29 +73,29 @@ public class VideoPlayer {
     }
 
     public void openVideo(String filePath) throws Exception {
-        if (grabber != null) {
+        if (mediaPlayer != null) {
             stop();
-            grabber.close();
         }
 
-        grabber = new FFmpegFrameGrabber(filePath);
-        grabber.start();
+        // 打开视频文件
+        mediaPlayer.media().play(filePath);
+        
+        // 禁用字幕
+        mediaPlayer.subpictures().setTrack(-1);
         
         // 获取视频信息
-        durationSeconds = grabber.getLengthInTime() / 1000000.0;
         currentTimeSeconds = 0;
-        lastTimeSeconds = 0;
+        durationSeconds = mediaPlayer.status().length() / 1000.0;
         
         // 设置ImageView的尺寸
-        double aspectRatio = (double) grabber.getImageWidth() / grabber.getImageHeight();
-        imageView.setFitWidth(800); // 设置固定宽度
-        imageView.setFitHeight(800 / aspectRatio);
-        
-        // 确保显示第一帧
-        Frame frame = grabber.grabImage();
-        if (frame != null) {
-            showFrame(frame);
-        }
+        Platform.runLater(() -> {
+            int videoWidth = (int)mediaPlayer.video().videoDimension().getWidth();
+            int videoHeight = (int)mediaPlayer.video().videoDimension().getHeight();
+            double aspectRatio = (double) videoWidth / videoHeight;
+            imageView.setFitWidth(800);
+            imageView.setFitHeight(800 / aspectRatio);
+            imageView.setPreserveRatio(true);
+        });
         
         if (callback != null) {
             callback.onDurationChanged(durationSeconds);
@@ -65,135 +104,51 @@ public class VideoPlayer {
     }
 
     public void play() {
-        if (grabber == null || isPlaying.get()) return;
+        if (mediaPlayer == null || isPlaying.get()) return;
         
+        mediaPlayer.controls().play();
         isPlaying.set(true);
-        playbackThread = Executors.newSingleThreadScheduledExecutor();
-        playbackThread.scheduleAtFixedRate(() -> {
-            try {
-                if (!isPlaying.get()) return;
-                
-                Frame frame = grabber.grab();
-                if (frame == null) {
-                    stop();
-                    return;
-                }
-                
-                double newTimeSeconds = grabber.getTimestamp() / 1000000.0;
-                if (newTimeSeconds >= lastTimeSeconds) {
-                    currentTimeSeconds = newTimeSeconds;
-                    lastTimeSeconds = currentTimeSeconds;
-                }
-                
-                showFrame(frame);
-                
-                if (callback != null && !isUpdatingSlider) {
-                    Platform.runLater(() -> {
-                        isUpdatingSlider = true;
-                        callback.onTimeChanged(currentTimeSeconds);
-                        isUpdatingSlider = false;
-                    });
-                }
-                
-            } catch (Exception e) {
-                e.printStackTrace();
-            }
-        }, 0, 33, TimeUnit.MILLISECONDS); // ~30fps
     }
 
     public void pause() {
+        if (mediaPlayer == null || !isPlaying.get()) return;
+        
+        mediaPlayer.controls().pause();
         isPlaying.set(false);
-        if (playbackThread != null) {
-            playbackThread.shutdown();
-        }
     }
 
     public void stop() {
-        pause();
-        try {
-            if (grabber != null) {
-                grabber.setTimestamp(0);
-                currentTimeSeconds = 0;
-                lastTimeSeconds = 0;
-                if (callback != null) {
-                    Platform.runLater(() -> callback.onTimeChanged(currentTimeSeconds));
-                }
-            }
-        } catch (Exception e) {
-            e.printStackTrace();
+        if (mediaPlayer == null) return;
+        
+        mediaPlayer.controls().stop();
+        isPlaying.set(false);
+        currentTimeSeconds = 0;
+        if (callback != null) {
+            Platform.runLater(() -> callback.onTimeChanged(currentTimeSeconds));
         }
     }
 
     public void seek(double seconds) {
+        if (mediaPlayer == null) return;
+        
+        isUpdatingSlider = true;
+        currentTimeSeconds = seconds;
+        mediaPlayer.controls().setTime((long)(seconds * 1000));
+        
+        // 等待一小段时间确保时间已经更新
         try {
-            if (grabber != null) {
-                isUpdatingSlider = true;
-                currentTimeSeconds = seconds;
-                lastTimeSeconds = seconds;
-                
-                // 取消之前的延迟seek任务
-                if (seekDelayExecutor != null) {
-                    seekDelayExecutor.shutdownNow();
-                }
-                
-                // 创建新的延迟seek任务
-                seekDelayExecutor = Executors.newSingleThreadScheduledExecutor();
-                seekDelayExecutor.schedule(() -> {
-                    try {
-                        grabber.setTimestamp((long)(seconds * 1000000));
-                        
-                        // 尝试多次获取帧直到获得有效的视频帧
-                        Frame frame = null;
-                        for (int i = 0; i < 10 && frame == null; i++) {
-                            frame = grabber.grabImage();
-                        }
-                        
-                        if (frame != null) {
-                            showFrame(frame);
-                        } else {
-                            // 如果获取不到视频帧，尝试普通grab
-                            frame = grabber.grab();
-                            if (frame != null) {
-                                showFrame(frame);
-                            }
-                        }
-                        
-                        if (callback != null) {
-                            Platform.runLater(() -> {
-                                callback.onTimeChanged(currentTimeSeconds);
-                                isUpdatingSlider = false;
-                            });
-                        }
-                    } catch (Exception e) {
-                        e.printStackTrace();
-                        isUpdatingSlider = false;
-                    } finally {
-                        seekDelayExecutor.shutdown();
-                    }
-                }, SEEK_DELAY_MS, TimeUnit.MILLISECONDS);
-                
-            }
-        } catch (Exception e) {
-            e.printStackTrace();
-            isUpdatingSlider = false;
+            Thread.sleep(50);
+        } catch (InterruptedException e) {
+            // 忽略中断异常
         }
-    }
-
-    private void showFrame(Frame frame) {
-        if (frame != null && frame.image != null) {
-            Java2DFrameConverter converter = new Java2DFrameConverter();
-            BufferedImage image = converter.convert(frame);
+        
+        // 强制更新当前时间
+        currentTimeSeconds = mediaPlayer.status().time() / 1000.0;
+        
+        if (callback != null) {
             Platform.runLater(() -> {
-                WritableImage writableImage = new WritableImage(image.getWidth(), image.getHeight());
-                PixelWriter pixelWriter = writableImage.getPixelWriter();
-                
-                for (int x = 0; x < image.getWidth(); x++) {
-                    for (int y = 0; y < image.getHeight(); y++) {
-                        pixelWriter.setArgb(x, y, image.getRGB(x, y));
-                    }
-                }
-                
-                imageView.setImage(writableImage);
+                callback.onTimeChanged(currentTimeSeconds);
+                isUpdatingSlider = false;
             });
         }
     }
@@ -210,17 +165,19 @@ public class VideoPlayer {
         return isPlaying.get();
     }
 
+    public void setPlaybackSpeed(double speed) {
+        if (mediaPlayer != null) {
+            mediaPlayer.controls().setRate((float)speed);
+        }
+    }
+
     public void dispose() {
-        try {
+        if (mediaPlayer != null) {
             stop();
-            if (seekDelayExecutor != null) {
-                seekDelayExecutor.shutdownNow();
-            }
-            if (grabber != null) {
-                grabber.close();
-            }
-        } catch (Exception e) {
-            e.printStackTrace();
+            mediaPlayer.release();
+        }
+        if (mediaPlayerFactory != null) {
+            mediaPlayerFactory.release();
         }
     }
 

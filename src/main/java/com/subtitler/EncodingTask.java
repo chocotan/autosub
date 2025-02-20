@@ -6,6 +6,7 @@ import javafx.beans.property.SimpleIntegerProperty;
 import javafx.beans.property.IntegerProperty;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 public class EncodingTask {
     private final StringProperty filename = new SimpleStringProperty();
@@ -14,6 +15,9 @@ public class EncodingTask {
     private final StringProperty startTime = new SimpleStringProperty();
     private final StringProperty endTime = new SimpleStringProperty();
     private String errorMessage;
+    private Process ffmpegProcess;
+    private final AtomicBoolean isCancelled = new AtomicBoolean(false);
+    private Thread encodingThread;
 
     public EncodingTask(String filename) {
         this.filename.set(filename);
@@ -38,6 +42,28 @@ public class EncodingTask {
 
     public String getErrorMessage() { return errorMessage; }
     public void setErrorMessage(String errorMessage) { this.errorMessage = errorMessage; }
+
+    public void setFfmpegProcess(Process process) {
+        this.ffmpegProcess = process;
+    }
+
+    public void setEncodingThread(Thread thread) {
+        this.encodingThread = thread;
+    }
+
+    public boolean isCancelled() {
+        return isCancelled.get();
+    }
+
+    public void cancel() {
+        isCancelled.set(true);
+        if (ffmpegProcess != null) {
+            ffmpegProcess.destroy();
+        }
+        if (encodingThread != null) {
+            encodingThread.interrupt();
+        }
+    }
 
     @Override
     public String toString() {

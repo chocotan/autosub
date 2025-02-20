@@ -43,6 +43,10 @@ import java.time.format.DateTimeFormatter;
 import javafx.scene.control.ContextMenu;
 import javafx.scene.control.MenuItem;
 import javafx.beans.property.SimpleStringProperty;
+import java.util.Stack;
+import java.util.stream.Collectors;
+import javafx.scene.Node;
+import javafx.scene.control.cell.PropertyValueFactory;
 
 public class MainViewController {
     @FXML private ImageView mediaView;
@@ -51,6 +55,9 @@ public class MainViewController {
     @FXML private TableColumn<Subtitle, String> startTimeColumn;
     @FXML private TableColumn<Subtitle, String> endTimeColumn;
     @FXML private TableColumn<Subtitle, String> contentColumn;
+    @FXML private Label prevSubtitleLabel;
+    @FXML private Label currentSubtitleLabel;
+    @FXML private Label nextSubtitleLabel;
 
     private VideoPlayer videoPlayer;
     private File currentVideoFile;
@@ -61,8 +68,69 @@ public class MainViewController {
     private Stage taskWindow;
     private ObservableList<Subtitle> subtitles = FXCollections.observableArrayList();
 
+    // 添加撤销相关的字段
+    private Stack<SubtitleState> undoStack = new Stack<>();
+    private static final int MAX_UNDO_STEPS = 50;
+    private boolean isUndoing = false;
+
+    // 添加内部类来保存字幕状态
+    private static class SubtitleState {
+        private final String textContent;
+        private final List<SubtitleData> subtitleDataList;
+
+        public SubtitleState(String textContent, List<Subtitle> subtitles) {
+            this.textContent = textContent;
+            this.subtitleDataList = subtitles.stream()
+                .map(s -> new SubtitleData(s.getContent(), s.getStartTime(), s.getEndTime()))
+                .collect(Collectors.toList());
+        }
+
+        private static class SubtitleData {
+            String content;
+            String startTime;
+            String endTime;
+
+            SubtitleData(String content, String startTime, String endTime) {
+                this.content = content;
+                this.startTime = startTime;
+                this.endTime = endTime;
+            }
+        }
+    }
+
+    private void saveCurrentState() {
+        if (!isUndoing) {
+            SubtitleState state = new SubtitleState(subtitleInput.getText(), subtitles);
+            undoStack.push(state);
+            if (undoStack.size() > MAX_UNDO_STEPS) {
+                undoStack.remove(0);
+            }
+        }
+    }
+
+    private boolean userScrolling = false;
+    private long lastUserScrollTime = 0;
+    private static final long SCROLL_TIMEOUT = 2000; // 2秒后恢复自动滚动
+
+    @FXML private ComboBox<String> playbackSpeedComboBox;
+
     @FXML
     public void initialize() {
+        // 初始化倍速选择下拉框
+        ObservableList<String> speedOptions = FXCollections.observableArrayList(
+            "1.0", "1.25", "1.5", "2.0", "4.0"
+        );
+        playbackSpeedComboBox.setItems(speedOptions);
+        playbackSpeedComboBox.setValue("1.0");
+
+        // 添加倍速播放监听器
+        playbackSpeedComboBox.getSelectionModel().selectedItemProperty().addListener((obs, oldVal, newVal) -> {
+            if (videoPlayer != null && newVal != null) {
+                double speed = Double.parseDouble(newVal);
+                videoPlayer.setPlaybackSpeed(speed);
+            }
+        });
+
         // 初始化表格列
         startTimeColumn.setCellValueFactory(data -> data.getValue().startTimeProperty());
         endTimeColumn.setCellValueFactory(data -> data.getValue().endTimeProperty());
@@ -159,12 +227,18 @@ public class MainViewController {
                     double endColumnX = startTimeColumn.getWidth() + endTimeColumn.getWidth();
 
                     if (event.getX() < startTimeColumn.getWidth()) {
+                        // 保存当前状态
+                        saveCurrentState();
+
                         selected.setStartTime(formatTimeWithMillis(currentTime));
                         // 更新左侧文本区域
                         updateTextAreaFromSubtitles();
                         // 强制更新表格显示
                         subtitleTable.refresh();
                     } else if (event.getX() < endColumnX && event.getX() > startTimeColumn.getWidth()) {
+                        // 保存当前状态
+                        saveCurrentState();
+
                         selected.setEndTime(formatTimeWithMillis(currentTime));
                         // 更新左侧文本区域
                         updateTextAreaFromSubtitles();
@@ -202,6 +276,9 @@ public class MainViewController {
                         timeSlider.setValue(progress);
                     }
                 }
+
+                // 更新字幕预览
+                updateSubtitlePreview(currentTimeSeconds);
             }
 
             @Override
@@ -222,52 +299,51 @@ public class MainViewController {
                 // 计算点击位置对应的时间
                 double duration = videoPlayer.getDuration();
                 double time = duration * (timeSlider.getValue() / 100.0);
+
+                // 立即更新视频位置
+                videoPlayer.seek(time);
+
                 timeLabel.setText(String.format("%s / %s",
                     formatTimeWithMillis(time),
                     formatTimeWithMillis(duration)));
 
-                // 存储播放状态和目标时间
-                timeSlider.setUserData(new double[]{wasPlaying ? 1.0 : 0.0, time});
+                // 存储播放状态
+                timeSlider.setUserData(wasPlaying ? 1.0 : 0.0);
             }
         });
 
         // 修改滑块拖动监听
         timeSlider.valueProperty().addListener((obs, oldVal, newVal) -> {
             if (videoPlayer != null && timeSlider.isValueChanging()) {
-                // 只更新时间标签和图片
                 double duration = videoPlayer.getDuration();
                 double time = duration * (newVal.doubleValue() / 100.0);
+
+                // 立即更新视频位置
+                videoPlayer.seek(time);
+
                 timeLabel.setText(String.format("%s / %s",
                     formatTimeWithMillis(time),
                     formatTimeWithMillis(duration)));
-
-                // 更新存储的目标时间
-                double[] data = (double[]) timeSlider.getUserData();
-                if (data != null) {
-                    data[1] = time;
-                    timeSlider.setUserData(data);
-                    // 在拖动过程中也更新图片
-                    videoPlayer.seek(time);
-                }
             }
         });
 
         // 修改滑块释放事件监听
         timeSlider.setOnMouseReleased(event -> {
             if (videoPlayer != null) {
-                // 获取存储的状态和时间
-                double[] data = (double[]) timeSlider.getUserData();
-                if (data != null) {
-                    // 根据之前的状态决定是否恢复播放
-                    if (data[0] > 0) {
-                        videoPlayer.play();
-                    }
+                // 获取之前的播放状态
+                Object data = timeSlider.getUserData();
+                if (data instanceof Double && ((Double) data) > 0) {
+                    videoPlayer.play();
                 }
             }
         });
 
-        // 创建并保存文本变化监听器
-        textChangeListener = (observable, oldValue, newValue) -> updateSubtitles();
+        // 修改文本变化监听器
+        textChangeListener = (observable, oldValue, newValue) -> {
+            if (!isUndoing && oldValue != null && !oldValue.equals(newValue)) {
+                updateSubtitles(); // updateSubtitles 方法中已经包含了状态保存
+            }
+        };
         subtitleInput.textProperty().addListener(textChangeListener);
 
         // 修改键盘事件监听器
@@ -280,12 +356,18 @@ public class MainViewController {
                     }
 
                     switch (event.getCode()) {
+                        case F1:
+                            togglePlay();
+                            event.consume();
+                            break;
                         case SPACE:
                             togglePlay();
                             event.consume();
                             break;
                         case LEFT:
-                            if (event.isControlDown()) {
+                            if (event.isControlDown() && event.isShiftDown()) {
+                                seekBackward5s();
+                            } else if (event.isControlDown()) {
                                 seekBackward1s();
                             } else {
                                 seekBackward05s();
@@ -293,7 +375,9 @@ public class MainViewController {
                             event.consume();
                             break;
                         case RIGHT:
-                            if (event.isControlDown()) {
+                            if (event.isControlDown() && event.isShiftDown()) {
+                                seekForward5s();
+                            } else if (event.isControlDown()) {
                                 seekForward1s();
                             } else {
                                 seekForward05s();
@@ -311,6 +395,12 @@ public class MainViewController {
                 togglePlay();
                 event.consume();
             }
+        });
+
+        // 添加滚动监听器
+        subtitleTable.setOnScrollStarted(event -> {
+            userScrolling = true;
+            lastUserScrollTime = System.currentTimeMillis();
         });
     }
 
@@ -450,7 +540,7 @@ public class MainViewController {
             String encoder;
             String hwaccel = settings.get("hwaccel");
             String codec = settings.get("codec");
-            
+
             switch (hwaccel) {
                 case "NVIDIA (nvenc)":
                     encoder = "H.264".equals(codec) ? "h264_nvenc" : "hevc_nvenc";
@@ -471,25 +561,16 @@ public class MainViewController {
 
             String bitrate = settings.get("bitrate");
 
-            // 使用Jaffree构建FFmpeg命令
-            FFmpeg ffmpeg = FFmpeg.atPath()
-                .addInput(UrlInput.fromPath(currentVideoFile.toPath()))
-                .addArguments("-c:v", encoder)
-                .addArguments("-b:v", bitrate + "k")
-                .addArguments("-c:a", "copy")
-                .setOverwriteOutput(true)
-                .addOutput(UrlOutput.toPath(Paths.get(outputPath)));
-
-            // 打印命令到控制台
-            System.out.println("执行命令: " + ffmpeg.toString());
-
             // 添加编码任务
-            addEncodingTask(outputPath, ffmpeg);
+            addEncodingTask(outputPath, encoder, bitrate);
         });
     }
 
     @FXML
     private void updateSubtitles() {
+        // 保存当前状态
+        saveCurrentState();
+
         String[] lines = subtitleInput.getText().split("\n");
 
         // 创建新的字幕列表
@@ -530,6 +611,9 @@ public class MainViewController {
         if (videoPlayer == null) return;
         Subtitle selected = subtitleTable.getSelectionModel().getSelectedItem();
         if (selected != null) {
+            // 保存当前状态
+            saveCurrentState();
+
             double currentTime = videoPlayer.getCurrentTime();
             String timeStr = formatTimeWithMillis(currentTime);
             selected.setStartTime(timeStr);
@@ -545,6 +629,9 @@ public class MainViewController {
         if (videoPlayer == null) return;
         Subtitle selected = subtitleTable.getSelectionModel().getSelectedItem();
         if (selected != null) {
+            // 保存当前状态
+            saveCurrentState();
+
             double currentTime = videoPlayer.getCurrentTime();
             String timeStr = formatTimeWithMillis(currentTime);
             selected.setEndTime(timeStr);
@@ -570,12 +657,16 @@ public class MainViewController {
                 StringBuilder content = new StringBuilder();
                 String startTime = null;
                 String endTime = null;
+                boolean isReadingContent = false;
 
                 for (String line : lines) {
                     line = line.trim();
+
                     if (line.isEmpty()) {
                         if (content.length() > 0) {
-                            Subtitle subtitle = new Subtitle(content.toString().trim());
+                            // 处理一个完整的字幕块
+                            String subtitleText = content.toString().trim();
+                            Subtitle subtitle = new Subtitle(subtitleText);
                             if (startTime != null) {
                                 subtitle.setStartTime(convertSrtTimeToNormal(startTime));
                             }
@@ -583,21 +674,42 @@ public class MainViewController {
                                 subtitle.setEndTime(convertSrtTimeToNormal(endTime));
                             }
                             subtitles.add(subtitle);
+
+                            // 重置状态
                             content.setLength(0);
                             startTime = null;
                             endTime = null;
+                            isReadingContent = false;
                         }
                     } else if (line.contains("-->")) {
                         String[] times = line.split("-->");
                         startTime = times[0].trim();
                         endTime = times[1].trim();
-                    } else if (!line.matches("\\d+")) { // 不是序号行
-                        content.append(line).append("\n");
+                        isReadingContent = true;
+                    } else if (isReadingContent) {
+                        if (content.length() > 0) {
+                            content.append("\n");
+                        }
+                        content.append(line);
                     }
+                    // 完全忽略序号行
                 }
 
-                // 更新文本区域
-                updateTextArea();
+                // 处理最后一条字幕（如果有的话）
+                if (content.length() > 0) {
+                    String subtitleText = content.toString().trim();
+                    Subtitle subtitle = new Subtitle(subtitleText);
+                    if (startTime != null) {
+                        subtitle.setStartTime(convertSrtTimeToNormal(startTime));
+                    }
+                    if (endTime != null) {
+                        subtitle.setEndTime(convertSrtTimeToNormal(endTime));
+                    }
+                    subtitles.add(subtitle);
+                }
+
+                // 更新左侧文本区域
+                updateTextAreaFromSubtitles();
 
             } catch (Exception e) {
                 showError("导入失败", "无法导入SRT字幕: " + e.getMessage());
@@ -772,6 +884,23 @@ public class MainViewController {
         }
     }
 
+    @FXML
+    private void seekForward5s() {
+        if (videoPlayer != null) {
+            double newTime = Math.min(videoPlayer.getCurrentTime() + 5.0,
+                                    videoPlayer.getDuration());
+            videoPlayer.seek(newTime);
+        }
+    }
+
+    @FXML
+    private void seekBackward5s() {
+        if (videoPlayer != null) {
+            double newTime = Math.max(videoPlayer.getCurrentTime() - 5.0, 0);
+            videoPlayer.seek(newTime);
+        }
+    }
+
     // 添加一个打开文件目录的辅助方法
     private void openFileDirectory(String filePath) {
         try {
@@ -830,11 +959,11 @@ public class MainViewController {
                     {
                         // 初始绑定
                         setValue(getStatusText(task));
-                        
+
                         // 监听状态和进度变化
-                        task.statusProperty().addListener((obs, old, newVal) -> 
+                        task.statusProperty().addListener((obs, old, newVal) ->
                             setValue(getStatusText(task)));
-                        task.progressProperty().addListener((obs, old, newVal) -> 
+                        task.progressProperty().addListener((obs, old, newVal) ->
                             setValue(getStatusText(task)));
                     }
                 };
@@ -849,8 +978,38 @@ public class MainViewController {
             });
             endTimeCol.setPrefWidth(80);
 
+            // 操作列
+            TableColumn<EncodingTask, Void> actionCol = new TableColumn<>("操作");
+            actionCol.setCellFactory(param -> new TableCell<>() {
+                private final Button cancelButton = new Button("取消");
+                {
+                    cancelButton.setOnAction(event -> {
+                        EncodingTask task = getTableView().getItems().get(getIndex());
+                        if ("正在编码".equals(task.getStatus())) {
+                            task.cancel();
+                        }
+                    });
+                }
+
+                @Override
+                protected void updateItem(Void item, boolean empty) {
+                    super.updateItem(item, empty);
+                    if (empty) {
+                        setGraphic(null);
+                    } else {
+                        EncodingTask task = getTableView().getItems().get(getIndex());
+                        if ("正在编码".equals(task.getStatus())) {
+                            setGraphic(cancelButton);
+                        } else {
+                            setGraphic(null);
+                        }
+                    }
+                }
+            });
+            actionCol.setPrefWidth(80);
+
             taskTable.getColumns().addAll(
-                startTimeCol, sourceFileCol, outputFileCol, statusCol, endTimeCol
+                startTimeCol, sourceFileCol, outputFileCol, statusCol, endTimeCol, actionCol
             );
 
             // 添加右键菜单
@@ -859,7 +1018,8 @@ public class MainViewController {
             clearItem.setOnAction(e -> {
                 tasks.removeIf(task ->
                     "编码完成".equals(task.getStatus()) ||
-                    "编码失败".equals(task.getStatus())
+                    "编码失败".equals(task.getStatus()) ||
+                    "已取消".equals(task.getStatus())
                 );
             });
             MenuItem openFolderItem = new MenuItem("打开输出目录");
@@ -897,7 +1057,7 @@ public class MainViewController {
         }
     }
 
-    private void addEncodingTask(String filename, FFmpeg ffmpeg) {
+    private void addEncodingTask(String filename, String encoder, String bitrate) {
         EncodingTask task = new EncodingTask(filename);
         Platform.runLater(() -> {
             tasks.add(task);
@@ -913,50 +1073,107 @@ public class MainViewController {
             // 获取视频总时长（毫秒）
             long totalDurationMillis = (long)(videoPlayer.getDuration() * 1000);
 
-            ffmpeg.setProgressListener(progress -> {
-                Long timeMillis = progress.getTimeMillis();
-                System.out.println("进度: " + timeMillis + " / " + totalDurationMillis);
-                if (timeMillis != null && totalDurationMillis > 0) {
-                    int percentage = (int) ((timeMillis * 100) / totalDurationMillis);
-                    // 确保进度不超过100%
-                    percentage = Math.min(percentage, 100);
-                    int finalPercentage = percentage;
-                    Platform.runLater(() -> {
-                        task.setProgress(finalPercentage);
-                        // 强制刷新表格显示
-                        taskTable.refresh();
-                    });
+            Thread encodingThread = new Thread(() -> {
+                try {
+                    // 构建 FFmpeg 命令
+                    List<String> command = new ArrayList<>();
+                    command.add("ffmpeg");
+                    command.add("-i");
+                    command.add(currentVideoFile.getAbsolutePath());
+                    command.add("-c:v");
+                    command.add(encoder);
+                    command.add("-b:v");
+                    command.add(bitrate + "k");
+                    command.add("-c:a");
+                    command.add("copy");
+                    command.add("-y");
+                    command.add(filename);
+
+                    // 创建进程
+                    ProcessBuilder processBuilder = new ProcessBuilder(command);
+                    processBuilder.redirectErrorStream(true);
+                    Process process = processBuilder.start();
+                    task.setFfmpegProcess(process);
+
+                    // 读取输出并更新进度
+                    try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+                        String line;
+                        while ((line = reader.readLine()) != null) {
+                            if (task.isCancelled()) {
+                                process.destroy();
+                                break;
+                            }
+
+                            // 解析进度信息
+                            if (line.contains("time=")) {
+                                try {
+                                    String timeStr = line.split("time=")[1].split(" ")[1];
+                                    String[] parts = timeStr.split(":");
+                                    long timeMillis = (long)((Long.parseLong(parts[0]) * 3600 +
+                                                     Long.parseLong(parts[1]) * 60 +
+                                                     Double.parseDouble(parts[2])) * 1000);
+
+                                    if (timeMillis > 0 && totalDurationMillis > 0) {
+                                        int percentage = (int) ((timeMillis * 100) / totalDurationMillis);
+                                        percentage = Math.min(percentage, 100);
+                                        int finalPercentage = percentage;
+                                        Platform.runLater(() -> {
+                                            task.setProgress(finalPercentage);
+                                            taskTable.refresh();
+                                        });
+                                    }
+                                } catch (Exception e) {
+                                    // 忽略解析错误
+                                }
+                            }
+                        }
+                    }
+
+                    // 等待编码完成
+                    int exitCode = process.waitFor();
+
+                    if (task.isCancelled()) {
+                        Platform.runLater(() -> {
+                            task.setStatus("已取消");
+                            task.setEndTime(LocalDateTime.now().format(DateTimeFormatter.ofPattern("HH:mm:ss")));
+                        });
+                        return;
+                    }
+
+                    if (exitCode == 0) {
+                        Platform.runLater(() -> {
+                            task.setStatus("编码完成");
+                            task.setProgress(100);
+                            task.setEndTime(LocalDateTime.now().format(DateTimeFormatter.ofPattern("HH:mm:ss")));
+
+                            // 显示完成对话框
+                            Alert alert = new Alert(AlertType.INFORMATION,
+                                "视频编码已完成，是否打开输出目录？",
+                                ButtonType.YES, ButtonType.NO);
+                            alert.setTitle("编码完成");
+                            alert.showAndWait().ifPresent(response -> {
+                                if (response == ButtonType.YES) {
+                                    openFileDirectory(filename);
+                                }
+                            });
+                        });
+                    } else {
+                        throw new RuntimeException("FFmpeg process exited with code " + exitCode);
+                    }
+                } catch (Exception e) {
+                    if (!task.isCancelled()) {
+                        Platform.runLater(() -> {
+                            task.setStatus("编码失败");
+                            task.setErrorMessage(e.getMessage());
+                            task.setEndTime(LocalDateTime.now().format(DateTimeFormatter.ofPattern("HH:mm:ss")));
+                            showError("编码失败", "视频编码失败: " + e.getMessage());
+                        });
+                    }
                 }
             });
 
-            new Thread(() -> {
-                try {
-                    ffmpeg.execute();
-                    Platform.runLater(() -> {
-                        task.setStatus("编码完成");
-                        task.setProgress(100);
-                        task.setEndTime(LocalDateTime.now().format(DateTimeFormatter.ofPattern("HH:mm:ss")));
-
-                        // 显示完成对话框
-                        Alert alert = new Alert(AlertType.INFORMATION,
-                            "视频编码已完成，是否打开输出目录？",
-                            ButtonType.YES, ButtonType.NO);
-                        alert.setTitle("编码完成");
-                        alert.showAndWait().ifPresent(response -> {
-                            if (response == ButtonType.YES) {
-                                openFileDirectory(filename);
-                            }
-                        });
-                    });
-                } catch (Exception e) {
-                    Platform.runLater(() -> {
-                        task.setStatus("编码失败");
-                        task.setErrorMessage(e.getMessage());
-                        task.setEndTime(LocalDateTime.now().format(DateTimeFormatter.ofPattern("HH:mm:ss")));
-                        showError("编码失败", "视频编码失败: " + e.getMessage());
-                    });
-                }
-            }).start();
+            task.setEncodingThread(encodingThread);
+            encodingThread.start();
         });
     }
 
@@ -970,5 +1187,202 @@ public class MainViewController {
             return status + " - " + task.getErrorMessage();
         }
         return status;
+    }
+
+    @FXML
+    private void undo() {
+        if (!undoStack.isEmpty()) {
+            isUndoing = true;
+            try {
+                SubtitleState previousState = undoStack.pop();
+
+                // 恢复文本内容
+                subtitleInput.setText(previousState.textContent);
+
+                // 恢复字幕列表
+                subtitles.clear();
+                for (SubtitleState.SubtitleData data : previousState.subtitleDataList) {
+                    Subtitle subtitle = new Subtitle(data.content);
+                    subtitle.setStartTime(data.startTime);
+                    subtitle.setEndTime(data.endTime);
+                    subtitles.add(subtitle);
+                }
+
+                // 刷新表格显示
+                subtitleTable.refresh();
+            } finally {
+                isUndoing = false;
+            }
+        }
+    }
+
+    private void updateSubtitlePreview(double currentTime) {
+        if (subtitles.isEmpty()) {
+            prevSubtitleLabel.setText("");
+            currentSubtitleLabel.setText("");
+            nextSubtitleLabel.setText("");
+            return;
+        }
+
+        int currentIndex = -1;
+        int prevIndex = -1;
+        int nextIndex = -1;
+
+        // 查找当前字幕
+        for (int i = 0; i < subtitles.size(); i++) {
+            Subtitle subtitle = subtitles.get(i);
+            if (isTimeInSubtitle(currentTime, subtitle)) {
+                currentIndex = i;
+                break;
+            } else if (getTimeInSeconds(subtitle.getStartTime()) > currentTime) {
+                nextIndex = i;
+                break;
+            }
+        }
+
+        // 如果没有找到当前字幕，但找到了下一个字幕
+        if (currentIndex == -1 && nextIndex != -1) {
+            // 查找上一个字幕
+            for (int i = nextIndex - 1; i >= 0; i--) {
+                Subtitle subtitle = subtitles.get(i);
+                if (!subtitle.getEndTime().isEmpty()) {
+                    prevIndex = i;
+                    break;
+                }
+            }
+        }
+        // 如果找到了当前字幕
+        else if (currentIndex != -1) {
+            prevIndex = currentIndex - 1;
+            nextIndex = currentIndex + 1;
+        }
+        // 如果都没找到，查找下一个字幕
+        else {
+            for (int i = 0; i < subtitles.size(); i++) {
+                Subtitle subtitle = subtitles.get(i);
+                if (!subtitle.getStartTime().isEmpty() &&
+                    getTimeInSeconds(subtitle.getStartTime()) > currentTime) {
+                    nextIndex = i;
+                    break;
+                }
+            }
+            // 查找上一个字幕
+            if (nextIndex == -1) {
+                for (int i = subtitles.size() - 1; i >= 0; i--) {
+                    Subtitle subtitle = subtitles.get(i);
+                    if (!subtitle.getEndTime().isEmpty() &&
+                        getTimeInSeconds(subtitle.getEndTime()) <= currentTime) {
+                        prevIndex = i;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // 更新显示
+        prevSubtitleLabel.setText(prevIndex >= 0 ? formatSubtitlePreview(subtitles.get(prevIndex)) : "");
+        currentSubtitleLabel.setText(currentIndex >= 0 ? formatSubtitlePreview(subtitles.get(currentIndex)) : "");
+        nextSubtitleLabel.setText(nextIndex >= 0 && nextIndex < subtitles.size() ?
+                                formatSubtitlePreview(subtitles.get(nextIndex)) : "");
+
+        // 更新表格选中项
+        if (currentIndex >= 0) {
+            subtitleTable.getSelectionModel().select(currentIndex);
+
+            // 检查是否应该自动滚动
+            long now = System.currentTimeMillis();
+            if (!userScrolling || (now - lastUserScrollTime > SCROLL_TIMEOUT)) {
+                userScrolling = false;
+
+                // 检查当前项是否在可视范围内
+                int firstVisible = getFirstVisibleIndex();
+                int lastVisible = getLastVisibleIndex();
+
+                if (currentIndex < firstVisible || currentIndex > lastVisible) {
+                    subtitleTable.scrollTo(currentIndex);
+                }
+            }
+        }
+    }
+
+    private boolean isTimeInSubtitle(double currentTime, Subtitle subtitle) {
+        if (subtitle.getStartTime().isEmpty() || subtitle.getEndTime().isEmpty()) {
+            return false;
+        }
+        double startTime = getTimeInSeconds(subtitle.getStartTime());
+        double endTime = getTimeInSeconds(subtitle.getEndTime());
+        return currentTime >= startTime && currentTime <= endTime;
+    }
+
+    private double getTimeInSeconds(String timeStr) {
+        if (timeStr == null || timeStr.isEmpty()) {
+            return 0;
+        }
+        String[] parts = timeStr.split("[:,]");
+        if (parts.length != 4) {
+            return 0;
+        }
+        int hours = Integer.parseInt(parts[0]);
+        int minutes = Integer.parseInt(parts[1]);
+        int seconds = Integer.parseInt(parts[2]);
+        int millis = Integer.parseInt(parts[3]);
+        return hours * 3600 + minutes * 60 + seconds + millis / 1000.0;
+    }
+
+    private String formatSubtitlePreview(Subtitle subtitle) {
+        StringBuilder sb = new StringBuilder();
+        if (!subtitle.getStartTime().isEmpty()) {
+            sb.append(subtitle.getStartTime());
+        }
+        if (!subtitle.getEndTime().isEmpty()) {
+            sb.append(" -> ").append(subtitle.getEndTime());
+        }
+        if (sb.length() > 0) {
+            sb.append(" | ");
+        }
+        sb.append(subtitle.getContent());
+        return sb.toString();
+    }
+
+    // 获取第一个可见项的索引
+    private int getFirstVisibleIndex() {
+        int index = subtitleTable.getSelectionModel().getSelectedIndex();
+        for (int i = index; i >= 0; i--) {
+            TableCell<?, ?> cell = getTableCell(i);
+            if (cell != null && cell.isVisible()) {
+                return i;
+            }
+        }
+        return 0;
+    }
+
+    // 获取最后一个可见项的索引
+    private int getLastVisibleIndex() {
+        int index = subtitleTable.getSelectionModel().getSelectedIndex();
+        int size = subtitleTable.getItems().size();
+        for (int i = index; i < size; i++) {
+            TableCell<?, ?> cell = getTableCell(i);
+            if (cell != null && cell.isVisible()) {
+                return i;
+            }
+        }
+        return size - 1;
+    }
+
+    // 获取指定索引的单元格
+    private TableCell<?, ?> getTableCell(int row) {
+        if (subtitleTable.getColumns().isEmpty()) return null;
+        TableColumn<?, ?> column = subtitleTable.getColumns().get(0);
+        if (column.getCellData(row) == null) return null;
+
+        for (Node node : subtitleTable.lookupAll(".table-cell")) {
+            if (node instanceof TableCell) {
+                TableCell<?, ?> cell = (TableCell<?, ?>) node;
+                if (cell.getTableRow() != null && cell.getTableRow().getIndex() == row) {
+                    return cell;
+                }
+            }
+        }
+        return null;
     }
 }

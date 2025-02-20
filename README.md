@@ -1,6 +1,6 @@
 ```
 --module-path
-"/Users/choco/Downloads/javafx-sdk-21.0.6/lib"
+"/home/choco/Dev/projects/javafx-sdk-23.0.2/lib"
 --add-modules
 javafx.controls,javafx.fxml
 --add-exports
