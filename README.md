@@ -1,6 +1,20 @@
+## AI开发的自用打轴机
+
+* 需java21和javafx17
+
+问： 为什么是javafx17？
+> 从javafx18开始不支持gtk2.0，导致输入法无法切换
+
+问： 下一个GUI工具是否会选用javafx了？
+> 不会，这货根本没人用，连个输入法都搞不定
+
+
+请使用如下JVM参数启动
+
 ```
+-Djdk.gtk.version=2
 --module-path
-"/home/choco/Dev/projects/javafx-sdk-23.0.2/lib"
+"/home/choco/Dev/projects/javafx-sdk-17.0.14/lib"
 --add-modules
 javafx.controls,javafx.fxml
 --add-exports
@@ -34,4 +48,5 @@ javafx.graphics/com.sun.javafx.css=ALL-UNNAMED
 javafx.base/com.sun.javafx.runtime=ALL-UNNAMED
 --add-exports
 javafx.controls/com.sun.javafx.scene.control.behavior=ALL-UNNAMED
+
 ```
