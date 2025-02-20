@@ -39,13 +39,14 @@
     
     <VBox spacing="5">
         <HBox spacing="10" alignment="CENTER_LEFT">
+            <Button text="播放/暂停" onAction="#togglePlay"/>
             <Button text="后退1秒" onAction="#seekBackward1s"/>
             <Button text="后退0.5秒" onAction="#seekBackward05s"/>
-            <Button text="播放/暂停" onAction="#togglePlay"/>
             <Button text="前进0.5秒" onAction="#seekForward05s"/>
             <Button text="前进1秒" onAction="#seekForward1s"/>
             <Label fx:id="timeLabel" text="00:00:00"/>
-            <ProgressBar fx:id="progressBar" visible="false" prefWidth="200"/>
+            <Region HBox.hgrow="ALWAYS"/>
+            <Button text="编码任务" onAction="#showEncodingTasks"/>
         </HBox>
         
         <Slider fx:id="timeSlider" VBox.vgrow="NEVER">
