@@ -2,6 +2,9 @@
 
 * 需java21和javafx17
 
+问： 为什么会有这个项目？
+> arctime pro用起来太费劲了，主要是linux下的焦点问题
+
 问： 为什么是javafx17？
 > 从javafx18开始不支持gtk2.0，导致输入法无法切换
 
